@@ -1,6 +1,6 @@
 """Low-level response streaming.
 
-Iterates an OpenAI/OpenRouter streaming completion and yields text pieces. Error
+Iterates an OpenAI-compatible streaming completion and yields text pieces. Error
 translation is handled one layer up in :mod:`seedcode.core.chat` so this stays a
 pure, reusable generator.
 """

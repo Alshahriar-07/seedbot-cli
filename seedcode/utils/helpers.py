@@ -32,9 +32,15 @@ def config_path() -> Path:
     return app_dir() / "config.json"
 
 
-def history_dir() -> Path:
-    """Directory holding saved conversation transcripts."""
+def history_dir(provider_id: str = "") -> Path:
+    """Directory holding saved conversation transcripts.
+
+    Each provider keeps its own history under ``history/<provider_id>/`` so
+    switching backends never mixes conversations.
+    """
     path = app_dir() / "history"
+    if provider_id:
+        path = path / provider_id
     try:
         path.mkdir(parents=True, exist_ok=True)
     except OSError:
@@ -52,11 +58,6 @@ def restrict_permissions(path: Path) -> None:
         path.chmod(0o600)
     except (OSError, NotImplementedError):
         pass
-
-
-def human_timestamp(epoch: float | None = None) -> str:
-    """Format an epoch time as a compact local timestamp."""
-    return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(epoch))
 
 
 def session_id() -> str:

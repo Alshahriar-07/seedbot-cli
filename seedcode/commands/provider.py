@@ -1,15 +1,14 @@
 """Provider and model selection: /provider, /model.
 
-Both commands are interactive: they render a live list fetched from the
-backend and let the user pick by number, exact id, or a filter string.
-The same flows are reused by first-run onboarding (:mod:`seedcode.app`),
-so setup and mid-session switching behave identically.
+Both commands are fully interactive: arrow keys move, typing fuzzy-filters
+the live list, Enter confirms, Esc cancels. The provider selector shows
+status badges, the backend, and each provider's current model; the model
+selector groups the catalogue by family. The same flows are reused by
+first-run onboarding (:mod:`seedcode.app`), so setup and mid-session
+switching behave identically.
 """
 
 from __future__ import annotations
-
-from prompt_toolkit import PromptSession
-from rich.table import Table
 
 from ..config import save_config
 from ..core.providers import (
@@ -19,19 +18,13 @@ from ..core.providers import (
     ProviderError,
     get_provider,
 )
-from ..ui.prompts import PT_STYLE, prompt_label
+from ..core.providers.base import STATUS_CONNECTED, STATUS_OFFLINE
+from ..core.providers.freemodel import AUTO_MODEL
+from ..ui.badges import badge_for_status
+from ..ui.menu import MenuItem, run_menu
+from ..ui.selector import Option, select
+from ..ui.textbox import read_text
 from . import CommandContext, CommandResult, command
-
-
-def _prompt(text: str, *, password: bool = False) -> str | None:
-    """Read one line of input; ``None`` means the user cancelled (Ctrl+C/D)."""
-    session: PromptSession = PromptSession()
-    try:
-        return session.prompt(
-            prompt_label(text), is_password=password, style=PT_STYLE
-        ).strip()
-    except (EOFError, KeyboardInterrupt):
-        return None
 
 
 # --- provider selection ------------------------------------------------------
@@ -53,30 +46,38 @@ def _resolve_provider(text: str) -> Provider | None:
     return matches[0] if len(matches) == 1 else None
 
 
-def _provider_menu(ui, config) -> Provider | None:
-    """Render the provider list and prompt until a valid choice or cancel."""
-    providers = list(PROVIDERS.values())
-    table = Table.grid(padding=(0, 3))
-    table.add_column(style="seed.accent", justify="right")
-    table.add_column(style="seed.text")
-    table.add_column(style="seed.dim")
-    for idx, p in enumerate(providers, 1):
-        marker = "● current" if p.id == config.provider else ""
-        note = "no API key needed" if not p.requires_key else "API key required"
-        table.add_row(str(idx), f"{p.label}  ({note})", marker)
-    ui.panel(table, title="Providers")
+def _provider_backend(provider: Provider, config) -> str:
+    if provider.id == "ollama":
+        return "Local"
+    return provider.backend_label or f"{provider.label} API"
 
-    while True:
-        raw = _prompt("Provider (number or name) > ")
-        if raw is None or not raw:
-            ui.dim("Cancelled.")
-            return None
-        if raw.isdigit() and 1 <= int(raw) <= len(providers):
-            return providers[int(raw) - 1]
-        chosen = _resolve_provider(raw)
-        if chosen is not None:
-            return chosen
-        ui.warning(f"Unknown provider '{raw}'. Enter 1-{len(providers)} or a name.")
+
+def _provider_menu(ui, config) -> Provider | None:
+    """Interactive provider selector: badge, backend, and current model."""
+    options = []
+    for p in PROVIDERS.values():
+        entry = config.providers.get(p.id)
+        model = entry.model if entry and entry.model else "—"
+        if model == AUTO_MODEL:
+            model = "Auto"
+        options.append(
+            Option(
+                p.label,
+                value=p.id,
+                badge=badge_for_status(p.status),
+                columns=(_provider_backend(p, config), model),
+            )
+        )
+    chosen = select(
+        options,
+        title="Provider",
+        hint="↑↓ move   type to filter   Enter select   Esc cancel",
+        initial=config.provider,
+    )
+    if chosen is None:
+        ui.dim("Cancelled.")
+        return None
+    return PROVIDERS[str(chosen)]
 
 
 def _collect_key(ui, config, provider: Provider, *, replacing: bool = False) -> bool:
@@ -85,6 +86,7 @@ def _collect_key(ui, config, provider: Provider, *, replacing: bool = False) -> 
     Returns False when the user cancels. Only this provider's entry is
     written — other providers' keys are never touched.
     """
+    provider.prepare(config)  # bind validation to the configured sub-backend
     if replacing:
         ui.info(f"Enter a new API key for {provider.label}.")
         ui.dim(f"Current: {config.masked_key(provider.id)}")
@@ -93,19 +95,21 @@ def _collect_key(ui, config, provider: Provider, *, replacing: bool = False) -> 
     if provider.key_hint:
         ui.dim(f"Key: {provider.key_hint}")
     while True:
-        key = _prompt("API Key > ", password=True)
+        key = read_text("API Key > ", password=True)
         if key is None or not key:
             ui.dim("Cancelled — no key saved.")
             return False
         with ui.thinking("Validating key"):
             result = provider.validate_key(key)
         if result.ok:
+            # Only a key that passed real authentication is ever saved.
             config.set_api_key(provider.id, key)
             save_config(config)
+            provider.status = STATUS_CONNECTED
             ui.success(result.message)
             return True
         ui.error(result.message)
-        ui.dim("Try again, or press Enter to cancel.")
+        ui.dim("Try again, or press Esc to cancel.")
 
 
 def _ensure_ready(ui, config, provider: Provider) -> bool:
@@ -117,6 +121,7 @@ def _ensure_ready(ui, config, provider: Provider) -> bool:
     if not provider.requires_key:
         with ui.thinking("Checking Ollama"):
             running = provider.detect(config)
+        provider.status = STATUS_CONNECTED if running else STATUS_OFFLINE
         if running:
             ui.success("Ollama server detected.")
         else:
@@ -127,6 +132,10 @@ def _ensure_ready(ui, config, provider: Provider) -> bool:
         return True
 
     if config.get_api_key(provider.id).strip():
+        # Existing key: refresh this provider's connection status with a
+        # real request so the selector badge reflects reality immediately.
+        with ui.thinking(f"Checking {provider.label}"):
+            provider.refresh_status(config)
         return True
     return _collect_key(ui, config, provider)
 
@@ -183,22 +192,123 @@ def _match_model(models: list[ModelInfo], text: str) -> ModelInfo | None:
     return partial[0] if len(partial) == 1 else None
 
 
-def _render_models(ui, models: list[ModelInfo], total: int, provider_label: str) -> None:
-    table = Table.grid(padding=(0, 2))
-    table.add_column(style="seed.accent", justify="right")
-    table.add_column(style="seed.text")
-    table.add_column(style="seed.dim")
-    for idx, m in enumerate(models, 1):
-        info = m.detail
-        if m.label and m.label != m.id:
-            info = f"{m.label}   {m.detail}".strip()
-        table.add_row(str(idx), m.id, info)
-    shown = f"{len(models)} of {total}" if len(models) != total else str(total)
-    ui.panel(table, title=f"{provider_label} models ({shown})")
+# Family keywords for grouping the model selector (checked in order).
+_FAMILIES: tuple[tuple[str, str], ...] = (
+    ("codex", "Codex"),
+    ("claude", "Claude"),
+    ("gpt", "GPT"),
+    ("o1", "GPT"),
+    ("o3", "GPT"),
+    ("qwen", "Qwen"),
+    ("deepseek", "DeepSeek"),
+    ("gemini", "Gemini"),
+    ("gemma", "Gemini"),
+    ("llama", "Llama"),
+    ("mistral", "Mistral"),
+    ("mixtral", "Mistral"),
+)
+
+
+def _model_group(model: ModelInfo) -> str:
+    """Family header for the grouped model selector."""
+    hay = f"{model.id} {model.label}".lower()
+    for needle, family in _FAMILIES:
+        if needle in hay:
+            return family
+    if "/" in model.id:
+        vendor = model.id.split("/", 1)[0]
+        return vendor.replace("-", " ").title()
+    return "Other"
+
+
+def _model_options(models: list[ModelInfo], current: str) -> list[Option]:
+    """Grouped, badge-carrying options for the model selector."""
+    grouped: dict[str, list[ModelInfo]] = {}
+    for m in models:
+        grouped.setdefault(_model_group(m), []).append(m)
+    options: list[Option] = []
+    for family in sorted(grouped, key=lambda g: (g == "Other", g.lower())):
+        for m in grouped[family]:
+            detail = m.detail
+            if m.label and m.label != m.id:
+                detail = f"{m.label}   {m.detail}".strip()
+            options.append(
+                Option(
+                    m.id,
+                    value=m.id,
+                    detail=detail,
+                    group=family,
+                    badge="ready" if m.id == current else "",
+                )
+            )
+    return options
+
+
+def _pick_model_interactive(ui, config, provider: Provider, models: list[ModelInfo]) -> None:
+    """The interactive grouped model selector (plus Auto and OpenRouter modes)."""
+    options: list[Option] = []
+    if provider.supports_auto:
+        options.append(
+            Option(
+                "Auto",
+                value=AUTO_MODEL,
+                detail="best free model picked per request",
+                group="Modes",
+                badge="ready" if config.model == AUTO_MODEL else "",
+            )
+        )
+    if provider.id == "openrouter":
+        mode = provider.extra_settings(config).get("mode", "free")
+        other = "pro" if mode == "free" else "free"
+        options.append(
+            Option(
+                f"Switch to {other.title()} models",
+                value=f"__mode__{other}",
+                detail=f"currently showing {mode} models",
+                group="Modes",
+            )
+        )
+    options.extend(_model_options(models, config.model))
+
+    chosen = select(
+        options,
+        title=f"Model — {provider.label} ({len(models)} available)",
+        hint="type to filter (fuzzy)   ↑↓ move   Enter select   Esc cancel",
+        initial=config.model or None,
+        max_rows=14,
+    )
+    if chosen is None:
+        ui.dim("Cancelled.")
+        return
+    choice = str(chosen)
+    if choice.startswith("__mode__"):
+        ok, message = provider.set_extra_setting(config, "mode", choice[len("__mode__"):])
+        if not ok:
+            ui.warning(message)
+            return
+        save_config(config)
+        ui.success(message)
+        try:
+            with ui.thinking("Fetching models"):
+                refreshed = provider.list_models(config)
+        except ProviderError as exc:
+            ui.error(str(exc))
+            return
+        _pick_model_interactive(ui, config, provider, refreshed)
+        return
+    if choice == AUTO_MODEL:
+        _set_model(ui, config, AUTO_MODEL)
+        ui.dim("(Auto mode: the best free model is picked per request)")
+        return
+    _set_model(ui, config, choice)
 
 
 def select_model(ui, config, target: str = "") -> None:
-    """Browse the live model catalogue of the active provider and pick one."""
+    """Browse the live model catalogue of the active provider and pick one.
+
+    Providers with ``supports_auto`` additionally offer Auto mode: the best
+    model is resolved from the live catalogue on every request.
+    """
     try:
         provider = get_provider(config.provider)
     except ProviderError as exc:
@@ -206,6 +316,11 @@ def select_model(ui, config, target: str = "") -> None:
         return
     if provider.requires_key and not config.get_api_key(provider.id).strip():
         ui.warning(f"{provider.label} has no API key yet — run /provider first.")
+        return
+
+    if target and provider.supports_auto and target.lower() in ("auto", "a"):
+        _set_model(ui, config, AUTO_MODEL)
+        ui.dim("(Auto mode: the best free model is picked per request)")
         return
 
     try:
@@ -228,38 +343,17 @@ def select_model(ui, config, target: str = "") -> None:
             ui.warning(f"No model matching '{target}'. Run /model to browse.")
         return
 
-    shown = models
-    while True:
-        _render_models(ui, shown, total=len(models), provider_label=provider.label)
-        raw = _prompt("Model (number, id, or filter) > ")
-        if raw is None or not raw:
-            ui.dim("Cancelled.")
-            return
-        if raw.isdigit() and 1 <= int(raw) <= len(shown):
-            _set_model(ui, config, shown[int(raw) - 1].id)
-            return
-        exact = next((m for m in models if m.id.lower() == raw.lower()), None)
-        if exact is not None:
-            _set_model(ui, config, exact.id)
-            return
-        filtered = [
-            m
-            for m in models
-            if raw.lower() in m.id.lower() or raw.lower() in m.label.lower()
-        ]
-        if len(filtered) == 1:
-            _set_model(ui, config, filtered[0].id)
-            return
-        if not filtered:
-            ui.warning(f"No models match '{raw}'.")
-            continue
-        shown = filtered  # narrow the list and ask again
+    _pick_model_interactive(ui, config, provider, models)
 
 
 # --- command handlers --------------------------------------------------------
 
 
-@command("provider", "Select the active provider (OpenRouter, AeroLink, Ollama)")
+@command(
+    "provider",
+    "Select the active provider "
+    "(OpenRouter, FreeModel Claude, FreeModel Codex, AeroLink, Ollama)",
+)
 def _provider_cmd(ctx: CommandContext, arg: str) -> CommandResult:
     select_provider(ctx.ui, ctx.config, arg.strip())
     return CommandResult()
@@ -275,21 +369,74 @@ def _model_cmd(ctx: CommandContext, arg: str) -> CommandResult:
     return CommandResult()
 
 
-@command("apikey", "Set or replace the API key for the active provider", aliases=("key",))
-def _apikey_cmd(ctx: CommandContext, arg: str) -> CommandResult:
+def apikey_menu(ui, config) -> None:
+    """Manage the ACTIVE provider's API key: view, replace, remove, validate."""
     try:
-        provider = get_provider(ctx.config.provider)
+        provider = get_provider(config.provider)
     except ProviderError as exc:
-        ctx.ui.error(str(exc))
-        return CommandResult()
-
+        ui.error(str(exc))
+        return
     if not provider.requires_key:
-        ctx.ui.info(f"{provider.label} does not use an API key.")
-        return CommandResult()
+        ui.info(f"{provider.label} does not use an API key.")
+        return
 
+    while True:
+        has_key = bool(config.get_api_key(provider.id).strip())
+        choice = run_menu(
+            [
+                MenuItem("View", "view", status=config.masked_key(provider.id)),
+                MenuItem("Replace", "replace"),
+                MenuItem("Remove", "remove", disabled=not has_key),
+                MenuItem("Validate", "validate", disabled=not has_key),
+            ],
+            title=f"API Key — {provider.label}",
+            hint="↑↓ move   Enter select   Esc back",
+        )
+        if choice is None:
+            return
+        if choice == "view":
+            if has_key:
+                ui.info(f"{provider.label} key: {config.masked_key(provider.id)}")
+            else:
+                ui.dim("No key saved yet.")
+        elif choice == "replace":
+            _collect_key(ui, config, provider, replacing=has_key)
+        elif choice == "remove":
+            from ..ui.dialog import confirm_dialog
+
+            if confirm_dialog(
+                "Remove the saved key?", yes_label="Remove", no_label="Keep", danger=True
+            ):
+                config.set_api_key(provider.id, "")
+                save_config(config)
+                ui.success(f"{provider.label} key removed.")
+            else:
+                ui.dim("Key kept.")
+        elif choice == "validate":
+            provider.prepare(config)
+            with ui.thinking("Validating key"):
+                result = provider.validate_key(config.get_api_key(provider.id))
+            if result.ok:
+                ui.success(result.message)
+            else:
+                ui.error(result.message)
+
+
+@command("apikey", "View, replace, remove, or validate the active provider's key",
+         aliases=("key",))
+def _apikey_cmd(ctx: CommandContext, arg: str) -> CommandResult:
     key = arg.strip()
     if key:
         # Key given inline: validate and save it directly.
+        try:
+            provider = get_provider(ctx.config.provider)
+        except ProviderError as exc:
+            ctx.ui.error(str(exc))
+            return CommandResult()
+        if not provider.requires_key:
+            ctx.ui.info(f"{provider.label} does not use an API key.")
+            return CommandResult()
+        provider.prepare(ctx.config)
         with ctx.ui.thinking("Validating key"):
             result = provider.validate_key(key)
         if result.ok:
@@ -300,5 +447,5 @@ def _apikey_cmd(ctx: CommandContext, arg: str) -> CommandResult:
             ctx.ui.error(result.message)
         return CommandResult()
 
-    _collect_key(ctx.ui, ctx.config, provider, replacing=True)
+    apikey_menu(ctx.ui, ctx.config)
     return CommandResult()

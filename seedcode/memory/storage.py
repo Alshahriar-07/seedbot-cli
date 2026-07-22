@@ -14,11 +14,16 @@ from ..utils.helpers import history_dir, restrict_permissions, session_id
 
 
 class HistoryStore:
-    """Append-friendly JSON transcript for a single chat session."""
+    """Append-friendly JSON transcript for a single chat session.
 
-    def __init__(self, sid: str | None = None) -> None:
+    Transcripts are stored per provider (``history/<provider>/...``) so each
+    backend keeps its own independent history.
+    """
+
+    def __init__(self, sid: str | None = None, provider_id: str = "") -> None:
         self.session_id = sid or session_id()
-        self.path = history_dir() / f"session-{self.session_id}.json"
+        self.provider_id = provider_id
+        self.path = history_dir(provider_id) / f"session-{self.session_id}.json"
 
     def save(self, messages: list[Message]) -> None:
         """Write the full transcript (excluding system messages) to disk."""

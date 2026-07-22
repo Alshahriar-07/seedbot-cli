@@ -6,8 +6,9 @@ on Windows (the primary platform).
 | File | Purpose |
 |------|---------|
 | `install.bat` | Install Seed Code from source: Python 3.12+ check, pip upgrade, dependencies, editable install, verification. |
-| `build.bat` | **Complete release pipeline**: PyInstaller → `dist\seedcode.exe`, then Inno Setup → `Release\SeedCodeSetup.exe`. |
-| `setup.iss` | Inno Setup script (compiled by `build.bat`): Program Files install, PATH, Python 3.12 bootstrap, shortcuts, verified install, uninstaller. |
+| `build.bat` | **Complete release pipeline**: branding assets → PyInstaller → `dist\seedcode.exe` (Seed Code icon embedded), then Inno Setup → `Release\SeedCodeSetup.exe`. Every stage verified. |
+| `build_assets.py` | Generates `assets\windows\` (multi-resolution `seedcode.ico`, wizard bitmaps, exe version resource) — stdlib only, deterministic, self-verifying. |
+| `setup.iss` | Inno Setup script (compiled by `build.bat`): one-click branded wizard, Program Files install, PATH, shortcuts, double verification (exe + `seedcode` on PATH), uninstaller with data prompt. No Python needed on the user's PC. |
 | `uninstall.bat` | Remove a source install: PATH cleanup, `pip uninstall`, confirmed user-data deletion. |
 | `README.md` | This document. |
 
@@ -46,12 +47,19 @@ scripts\windows\build.bat
 
 Runs the complete, hands-off release pipeline:
 
-1. **Stage 1 — PyInstaller.** Ensures PyInstaller + project dependencies,
-   builds the one-file console executable, then smoke-tests it
-   (`seedcode.exe --version` must exit 0 or the pipeline stops):
-   `dist\seedcode.exe`
-2. **Stage 2 — Inno Setup.** Locates `ISCC.exe` (PATH, then the standard
-   per-user and Program Files locations) and compiles `setup.iss`:
+1. **Stage 0 — Branding.** `build_assets.py` generates the multi-resolution
+   Seed Code icon (16–256 px), the wizard side/header bitmaps, and the exe
+   version resource (publisher/product shown in Explorer). The icon is
+   structurally verified before anything is built with it.
+2. **Stage 1 — PyInstaller.** Ensures PyInstaller + project dependencies,
+   **runs the full test suite as a release gate** (a failing test stops the
+   pipeline), builds the one-file console executable **with the Seed Code
+   icon and version resource embedded**, then verifies it twice: `--version`
+   must report exactly the source version, and the icon payload must be
+   present inside the binary. `dist\seedcode.exe`
+3. **Stage 2 — Inno Setup.** Locates `ISCC.exe` (PATH, then the standard
+   per-user and Program Files locations) and compiles `setup.iss`, then
+   verifies the installer also embeds the icon:
    `Release\SeedCodeSetup.exe`
 
 Log: `%USERPROFILE%\.seedcode\logs\build.log`. The `build\` work directory is
@@ -59,21 +67,33 @@ disposable cache; `dist\` and `Release\` are the outputs.
 
 ## 3. The public installer (`Release\SeedCodeSetup.exe`)
 
-A professional Setup Wizard (modern style, license page, directory selection)
-that requires **zero configuration** from the user:
+**True one-click install.** The end user downloads one file, runs it, and
+accepts the defaults: License → Install → Finish. Nothing else — no Python,
+no pip, no PATH editing, no terminal work. The packaged exe carries its own
+Python runtime and every dependency inside it.
 
-- Installs the self-contained `seedcode.exe` into **Program Files**
-  (all Python dependencies are already bundled inside the exe at build time).
-- **Bootstraps Python 3.12** if missing: downloads the official python.org
-  installer and runs it unattended (`/quiet InstallAllUsers=1 PrependPath=1
-  Include_pip=1`), then upgrades pip. Best-effort: an offline decline never
-  breaks the Seed Code install itself, since the app doesn't need it to run.
+- **Branding everywhere.** The setup.exe, the installed seedcode.exe, the
+  Start Menu / Desktop shortcuts, the taskbar, Explorer, and Add/Remove
+  Programs all show the Seed Code icon — the default Python icon never
+  appears (the icon is embedded in the exe by PyInstaller AND pinned on
+  every shortcut by Inno Setup).
+- **Zero prerequisites.** The installer refuses to even compile without the
+  bundled standalone exe, and it never detects, downloads, or requires
+  Python on the user's machine.
+- Installs the self-contained `seedcode.exe` into **Program Files**.
 - Adds the install directory to the **system PATH** (and broadcasts the
   change, so new CMD/PowerShell/Windows Terminal sessions pick it up).
 - Creates **Start Menu** shortcuts and an optional **Desktop** shortcut.
-- **Verifies** the install by executing `seedcode --version`; a non-zero exit
-  aborts setup with an explicit failure message instead of reporting success.
-- Ships a full uninstaller that also reverts the PATH change.
+- **Verifies twice** before claiming success: (1) the installed exe must
+  report exactly the installer's own version; (2) the bare `seedcode`
+  command must resolve and answer through PATH exactly as a **new terminal**
+  will see it. Either failure aborts with a clear, specific error message.
+- Offers to **launch Seed Code** on finish — a fresh machine gets the full
+  first-run onboarding (choose provider → API key → model), with nothing
+  preconfigured.
+- Ships a full uninstaller that removes the exe, shortcuts, and PATH entry,
+  then **asks** whether to also delete settings, API keys, chat history, and
+  logs (`%USERPROFILE%\.seedcode`) — never silently.
 
 After installation, from any directory in any new terminal:
 
@@ -102,7 +122,8 @@ uninstaller also reverts its PATH change).
 | Code | Meaning |
 |------|---------|
 | 0 | Success. |
-| 1 | A pip/PyInstaller/ISCC step failed (see the log). |
+| 1 | A pip/PyInstaller/ISCC/asset step failed (see the log). |
 | 2 | Python 3.12+ not found. |
 | 3 | Script is not inside the Seed Code repository. |
 | 4 | Inno Setup 6 (ISCC.exe) not found (build.bat stage 2). |
+| 5 | Verification failed: stale/locked output, version mismatch, or missing icon. |

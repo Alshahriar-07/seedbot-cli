@@ -28,14 +28,33 @@ def _prepare_console() -> None:
             pass  # exotic streams (tests, embedders) — never fatal
 
 
+_HELP = """\
+Seed Code - a terminal-based AI coding assistant. Plant ideas. Grow code.
+
+Usage:
+  seedcode              Start the interactive app (chat + menu)
+  seedcode --version    Print the version and exit
+  seedcode --help       Show this help and exit
+
+Inside the app, type /help for commands: /provider, /model, /agent,
+/permission, /settings, /doctor, and more.
+
+Docs: https://github.com/Alshahriar-07/seedcode-cli
+"""
+
+
 def main() -> None:
     """Console-script entry point (``seedcode``)."""
-    # --version must work non-interactively and fast (installers verify with
-    # it), so handle it before any UI, config, or logging work happens.
+    # --version/--help must work non-interactively and fast (installers and
+    # scripts verify with them), so handle both before any UI, config, or
+    # logging work happens.
     if len(sys.argv) > 1 and sys.argv[1] in ("--version", "-V"):
         from . import __version__
 
         print(f"Seed Code v{__version__}")
+        return
+    if len(sys.argv) > 1 and sys.argv[1] in ("--help", "-h"):
+        print(_HELP)
         return
 
     _prepare_console()

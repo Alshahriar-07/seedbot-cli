@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from .chat import ChatEngine, ChatError, SYSTEM_PROMPT
+from .chat import ChatEngine, ChatError
 from .models import AppConfig, Message
 from .providers import (
     PROVIDERS,
@@ -24,7 +24,6 @@ __all__ = [
     "PROVIDERS",
     "Provider",
     "ProviderError",
-    "SYSTEM_PROMPT",
     "ValidationResult",
     "get_provider",
     "iter_stream",

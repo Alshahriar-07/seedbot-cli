@@ -1,6 +1,7 @@
 # Python
 __pycache__/
 *.py[cod]
+*.pyd
 *.egg-info/
 build/
 dist/
@@ -8,15 +9,34 @@ dist/
 .venv/
 venv/
 env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.spec
 
-# Seed Code local state (never commit user secrets or history)
+# Build / release outputs
+/Release/
+/archive/
+
+# Volatile outputs of scripts/windows/build_assets.py (regenerated every
+# build). The stable brand assets (seedcode.ico, wizard*.bmp) STAY committed:
+# tests and manual ISCC compiles depend on them existing in the repo.
+/assets/windows/version_info.txt
+/assets/windows/preview.png
+
+# Seed Code local state (never commit user secrets or history).
+# Anchored to the repo root so the seedcode/config package is NOT ignored.
 .seedcode/
-config/
-history/
+/config/
+/history/
+/data/
 *.log
 
-# OS / editor
+# OS / editor / agent state
 .DS_Store
 Thumbs.db
 .idea/
 .vscode/
+.claude/

@@ -1,52 +1,85 @@
 ; ==========================================================================
-;  Seed Code - Inno Setup script (public-release installer)
+;  Seed Code - Inno Setup script (one-click public-release installer)
 ;
-;  Packages the standalone dist\seedcode.exe (built by build.bat stage 1) and:
-;    * installs into Program Files
-;    * adds the install directory to the system PATH (removed on uninstall)
-;    * creates Start Menu shortcuts and an optional Desktop shortcut
-;    * if Python 3.12+ is missing, downloads and installs it automatically
-;    * verifies the install by executing `seedcode --version`; a failure
-;      aborts with an error instead of reporting success
+;  Packages the standalone dist\seedcode.exe (built by build.bat stage 1).
+;  The exe is fully self-contained (PyInstaller bundles Python + every
+;  dependency), so the end user needs NOTHING pre-installed: download
+;  SeedCodeSetup.exe, run it, done.
+;
+;    * modern branded wizard (Seed Code icon, wizard art, license page)
+;    * no Python required, detected, or downloaded on the user's PC
+;    * installs into Program Files, adds the folder to the system PATH
+;    * Start Menu shortcut always, Desktop shortcut optional - all with the
+;      Seed Code icon (never the default Python icon)
+;    * verifies TWICE before claiming success: the installed exe reports
+;      exactly this installer's version, and `seedcode` resolves through
+;      PATH the way a NEW terminal will see it; failure aborts loudly
+;    * offers to launch Seed Code when setup finishes
+;    * uninstaller removes exe/shortcuts/PATH and ASKS before deleting user
+;      data (settings, API keys, chat history, logs)
 ;
 ;  Compile:  build.bat   (or:  iscc /ORelease setup.iss  from scripts\windows)
 ;  Output:   Release\SeedCodeSetup.exe
 ; ==========================================================================
 
 #define MyAppName "Seed Code"
-#define MyAppVersion "1.0.0"
-#define MyAppPublisher "Al shahriar sowan"
-#define MyAppURL "https://github.com/Alshahriar-07/seedbot-cli"
+; build.bat injects the version it verified against the freshly built exe
+; (/DAppVersionFromBuild=...), so installer metadata can never disagree with
+; the packaged binary. The fallback below is only for manual ISCC runs.
+#ifdef AppVersionFromBuild
+  #define MyAppVersion AppVersionFromBuild
+#else
+  #define MyAppVersion "1.2.0.3"
+#endif
+; Refuse to compile without the build outputs - packaging nothing (or a
+; leftover) must fail loudly, not "succeed".
+#if !FileExists(AddBackslash(SourcePath) + "..\..\dist\seedcode.exe")
+  #error "dist\seedcode.exe not found - run scripts\windows\build.bat"
+#endif
+#if !FileExists(AddBackslash(SourcePath) + "..\..\assets\windows\seedcode.ico")
+  #error "assets\windows\seedcode.ico not found - run: python scripts\windows\build_assets.py"
+#endif
+#define MyAppPublisher "Al Shahriar Sowan"
+#define MyAppURL "https://github.com/Alshahriar-07/seedcode-cli"
 #define MyAppExeName "seedcode.exe"
-; Official python.org installer used for the automatic Python bootstrap.
-#define PythonInstallerURL "https://www.python.org/ftp/python/3.12.10/python-3.12.10-amd64.exe"
 
 [Setup]
 ; A stable AppId ties installs/upgrades/uninstalls together. Keep it constant.
 AppId={{7B2C4E10-9F3A-4B6D-8C21-3E5A1D9F0C77}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
+AppVerName={#MyAppName} {#MyAppVersion}
 AppPublisher={#MyAppPublisher}
 AppPublisherURL={#MyAppURL}
 AppSupportURL={#MyAppURL}
 AppUpdatesURL={#MyAppURL}
+VersionInfoVersion={#MyAppVersion}
+VersionInfoCompany={#MyAppPublisher}
+VersionInfoDescription={#MyAppName} Installer
 DefaultDirName={autopf}\SeedCode
 DefaultGroupName={#MyAppName}
+; One-click flow: skip the Start Menu group page (sane default is used) so a
+; user who accepts defaults clicks License -> Install -> Finish and is done.
 DisableProgramGroupPage=yes
+; Branding: the setup.exe itself, the wizard pages, and Add/Remove Programs
+; all use the Seed Code artwork - the default icon never appears.
+SetupIconFile=..\..\assets\windows\seedcode.ico
+WizardImageFile=..\..\assets\windows\wizard.bmp
+WizardSmallImageFile=..\..\assets\windows\wizard-small.bmp
+WizardStyle=modern
+UninstallDisplayName={#MyAppName}
+UninstallDisplayIcon={app}\seedcode.ico
 ; Default output; build.bat overrides with /O to target the repo-root Release\.
 OutputDir=..\..\Release
 OutputBaseFilename=SeedCodeSetup
 Compression=lzma2
 SolidCompression=yes
-WizardStyle=modern
 PrivilegesRequired=admin
 ArchitecturesInstallIn64BitMode=x64compatible
 ; Declaring PATH changes makes Windows broadcast WM_SETTINGCHANGE when setup
 ; finishes, so NEW terminal sessions see the updated PATH immediately.
 ChangesEnvironment=yes
 LicenseFile=..\..\LICENSE
-UninstallDisplayName={#MyAppName}
-UninstallDisplayIcon={app}\{#MyAppExeName}
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
@@ -59,13 +92,20 @@ Name: "desktopicon"; Description: "Create a &desktop shortcut"; \
 ; The self-contained CLI produced by PyInstaller - all Python dependencies
 ; are already bundled inside it, so end users need nothing else to RUN it.
 Source: "..\..\dist\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
+; The icon ships alongside the exe so every shortcut and the Add/Remove
+; Programs entry reference the same authoritative .ico file.
+Source: "..\..\assets\windows\seedcode.ico"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\README.md"; DestDir: "{app}"; Flags: ignoreversion isreadme
 Source: "..\..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
-Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
+; IconFilename pins every shortcut to the Seed Code .ico explicitly (belt and
+; braces on top of the icon PyInstaller embeds into the exe itself).
+Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; \
+    IconFilename: "{app}\seedcode.ico"; Comment: "Plant ideas. Grow code."
 Name: "{group}\Uninstall {#MyAppName}"; Filename: "{uninstallexe}"
-Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
+Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; \
+    IconFilename: "{app}\seedcode.ico"; Tasks: desktopicon
 
 [Registry]
 ; Append {app} to the system PATH only when it is not already present, so the
@@ -75,13 +115,14 @@ Root: HKLM; Subkey: "SYSTEM\CurrentControlSet\Control\Session Manager\Environmen
     Check: NeedsAddPath(ExpandConstant('{app}'))
 
 [Run]
+; postinstall entries run as the ORIGINAL (non-elevated) user by default, so
+; Seed Code starts under the logged-in account and onboarding writes to THAT
+; user's ~\.seedcode - a fresh profile gets the full first-run wizard
+; (provider -> API key -> model), with no provider/model/history preset.
 Filename: "{app}\{#MyAppExeName}"; Description: "Launch {#MyAppName}"; \
     Flags: nowait postinstall skipifsilent
 
 [Code]
-var
-  PythonWasInstalled: Boolean;
-
 // ---------------------------------------------------------------------------
 // PATH management
 // ---------------------------------------------------------------------------
@@ -127,106 +168,119 @@ begin
   end;
 end;
 
-procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
-begin
-  if CurUninstallStep = usPostUninstall then
-    RemovePath(ExpandConstant('{app}'));
-end;
-
 // ---------------------------------------------------------------------------
-// Python 3.12+ bootstrap
-// The packaged seedcode.exe is fully self-contained, but Seed Code's dev
-// workflow (editable installs, pip) targets Python 3.12+, so the installer
-// provisions it when absent - without failing the app install if the
-// download is declined or offline.
+// Install verification (mandatory - a failure aborts, never false success)
 // ---------------------------------------------------------------------------
-function PythonSatisfies(const Cmd, Args: string): Boolean;
+// Two independent probes, both required:
+//   1. The INSTALLED exe reports exactly this installer's version (exit code
+//      0 alone would also pass for a stale binary; the version string proves
+//      the packaged exe is the one this setup was built against).
+//   2. Bare `seedcode --version` resolves through PATH exactly as a NEW
+//      terminal will see it (the fresh {app} entry is appended for the probe
+//      because this process still holds the pre-install environment).
+function VersionReportOk(const Command: string; var Reported: string): Boolean;
 var
   ResultCode: Integer;
+  VerFile: string;
+  Output: AnsiString;
 begin
-  Result := Exec(Cmd, Args +
-    ' -c "import sys; raise SystemExit(0 if sys.version_info[:2] >= (3, 12) else 1)"',
-    '', SW_HIDE, ewWaitUntilTerminated, ResultCode) and (ResultCode = 0);
-end;
-
-function PythonPresent: Boolean;
-begin
-  Result := PythonSatisfies(ExpandConstant('{sys}\cmd.exe'), '/C py -3.13') or
-            PythonSatisfies(ExpandConstant('{sys}\cmd.exe'), '/C py -3.12') or
-            PythonSatisfies(ExpandConstant('{sys}\cmd.exe'), '/C python');
-end;
-
-procedure InstallPython;
-var
-  Installer: string;
-  ResultCode: Integer;
-begin
-  Installer := ExpandConstant('{tmp}\python-installer.exe');
-  WizardForm.StatusLabel.Caption := 'Downloading Python 3.12 (one-time setup)...';
-  try
-    DownloadTemporaryFile('{#PythonInstallerURL}', 'python-installer.exe', '', nil);
-  except
-    Log('Python download failed: ' + GetExceptionMessage);
-    MsgBox('Python 3.12 could not be downloaded (offline?). Seed Code itself ' +
-           'will still work; install Python later from python.org if you plan ' +
-           'to use the development workflow.', mbInformation, MB_OK);
-    exit;
-  end;
-
-  WizardForm.StatusLabel.Caption := 'Installing Python 3.12 (this may take a minute)...';
-  // Quiet, all-users install that also puts python on PATH and installs pip -
-  // the officially documented unattended options for the python.org installer.
-  if not Exec(Installer,
-      '/quiet InstallAllUsers=1 PrependPath=1 Include_pip=1',
+  Result := False;
+  VerFile := ExpandConstant('{tmp}\seedcode-version.txt');
+  // cmd /C "<command> > <file> 2>&1" - one outer quote pair; inner quotes
+  // (around the exe path) are preserved by cmd's quote-stripping rules.
+  if not Exec(ExpandConstant('{cmd}'),
+      '/C "' + Command + ' > "' + VerFile + '" 2>&1"',
       '', SW_HIDE, ewWaitUntilTerminated, ResultCode) or (ResultCode <> 0) then
   begin
-    Log(Format('Python installer exit code: %d', [ResultCode]));
-    MsgBox('The Python 3.12 installer did not complete (code ' +
-           IntToStr(ResultCode) + '). Seed Code itself will still work.',
-           mbInformation, MB_OK);
+    Log(Format('"%s" exited with code %d', [Command, ResultCode]));
     exit;
   end;
-  PythonWasInstalled := True;
-
-  // Upgrade pip on the freshly installed interpreter (best-effort).
-  WizardForm.StatusLabel.Caption := 'Upgrading pip...';
-  Exec(ExpandConstant('{sys}\cmd.exe'),
-       '/C py -3.12 -m pip install --upgrade pip',
-       '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  if not LoadStringFromFile(VerFile, Output) then
+    exit;
+  Reported := Trim(String(Output));
+  Result := Pos('v{#MyAppVersion}', Reported) > 0;
 end;
 
-// ---------------------------------------------------------------------------
-// Install-time hooks
-// ---------------------------------------------------------------------------
 procedure CurStepChanged(CurStep: TSetupStep);
 var
-  ResultCode: Integer;
+  Reported: string;
 begin
-  if CurStep = ssInstall then
-  begin
-    // Provision Python before files are copied so the status flow reads well.
-    if not PythonPresent then
-      InstallPython
-    else
-      Log('Python 3.12+ already present; skipping bootstrap.');
-  end;
-
   if CurStep = ssPostInstall then
   begin
-    // MANDATORY verification: run the installed exe. If `seedcode --version`
-    // fails, report installation FAILURE (abort) instead of success.
-    WizardForm.StatusLabel.Caption := 'Verifying installation...';
-    if not Exec(ExpandConstant('{app}\{#MyAppExeName}'), '--version', '',
-                SW_HIDE, ewWaitUntilTerminated, ResultCode) or (ResultCode <> 0) then
+    // Probe 1: the installed binary itself.
+    WizardForm.StatusLabel.Caption := 'Verifying the installed program...';
+    Reported := '(no output)';
+    if not VersionReportOk(
+        '"' + ExpandConstant('{app}\{#MyAppExeName}') + '" --version', Reported) then
     begin
-      Log(Format('Verification failed, exit code %d', [ResultCode]));
+      Log('Exe verification FAILED. Output: ' + Reported);
       SuppressibleMsgBox(
-        'Installation verification FAILED: "seedcode --version" did not run ' +
-        'correctly (exit code ' + IntToStr(ResultCode) + '). ' +
-        'The installation is incomplete - please report this issue.',
+        'Installation verification FAILED.' + #13#10#13#10 +
+        'The installed seedcode.exe did not report version {#MyAppVersion} ' +
+        '(it said: "' + Reported + '").' + #13#10#13#10 +
+        'The copied program is incomplete or damaged. Try running the ' +
+        'installer again; if it keeps failing, report it at {#MyAppURL}.',
         mbCriticalError, MB_OK, IDOK);
       Abort;
     end;
-    Log('Verification passed: seedcode --version exit code 0.');
+    Log('Exe verification passed: ' + Reported);
+
+    // Probe 2: the `seedcode` command as a NEW terminal will resolve it.
+    // This process still has the old PATH, so append {app} for the probe -
+    // the registry entry written above gives new shells the same view.
+    WizardForm.StatusLabel.Caption := 'Verifying the seedcode command...';
+    Reported := '(no output)';
+    if not VersionReportOk(
+        'set "PATH=%PATH%;' + ExpandConstant('{app}') + '" && seedcode --version',
+        Reported) then
+    begin
+      Log('PATH verification FAILED. Output: ' + Reported);
+      SuppressibleMsgBox(
+        'Seed Code was installed, but the "seedcode" command could not be ' +
+        'verified (output: "' + Reported + '").' + #13#10#13#10 +
+        'Another program named seedcode may be shadowing it on PATH. ' +
+        'You can still start Seed Code from the Start Menu shortcut. ' +
+        'If the command does not work in a new terminal, report it at ' +
+        '{#MyAppURL}.',
+        mbCriticalError, MB_OK, IDOK);
+      Abort;
+    end;
+    Log('PATH verification passed: ' + Reported);
+  end;
+end;
+
+// ---------------------------------------------------------------------------
+// Uninstall: PATH cleanup always; user data only after explicit consent
+// ---------------------------------------------------------------------------
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var
+  DataDir: string;
+begin
+  if CurUninstallStep = usPostUninstall then
+  begin
+    RemovePath(ExpandConstant('{app}'));
+
+    // Settings, API keys, chat history, and logs all live in ~\.seedcode.
+    // Never delete silently: they may be shared with a pip-installed copy.
+    DataDir := ExpandConstant('{%USERPROFILE}\.seedcode');
+    if DirExists(DataDir) then
+    begin
+      if SuppressibleMsgBox(
+        'Also remove your Seed Code data?' + #13#10#13#10 +
+        'This deletes settings, API keys, chat history, and logs at:' + #13#10 +
+        DataDir + #13#10#13#10 +
+        'Choose No to keep them for a future installation.',
+        mbConfirmation, MB_YESNO, IDNO) = IDYES then
+      begin
+        if DelTree(DataDir, True, True, True) then
+          Log('User data removed: ' + DataDir)
+        else
+          SuppressibleMsgBox(
+            'Some Seed Code data could not be removed. Delete this folder ' +
+            'manually if desired: ' + DataDir, mbInformation, MB_OK, IDOK);
+      end
+      else
+        Log('User data kept at ' + DataDir);
+    end;
   end;
 end;

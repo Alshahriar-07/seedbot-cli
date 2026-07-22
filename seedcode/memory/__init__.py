@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from .manager import list_sessions, load_session
+from .manager import delete_session, list_sessions, load_session
 from .storage import HistoryStore
 
-__all__ = ["HistoryStore", "list_sessions", "load_session"]
+__all__ = ["HistoryStore", "delete_session", "list_sessions", "load_session"]

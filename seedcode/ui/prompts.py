@@ -1,14 +1,16 @@
-"""Prompt Toolkit styling for input lines — keeps the green identity in prompts."""
+"""Compatibility shim — the input component moved to :mod:`seedcode.ui.textbox`.
+
+Kept so existing imports (``from ..ui.prompts import read_line``) continue
+to work; new code should import from ``textbox`` directly.
+"""
 
 from __future__ import annotations
 
-from prompt_toolkit.formatted_text import FormattedText
-from prompt_toolkit.styles import Style
+from .textbox import prompt_label, read_line, read_text
+from .theme import pt_style
 
-# prompt_toolkit style for the input line.
-PT_STYLE = Style.from_dict({"prompt": "#2ecc71 bold"})
+# Legacy name: a static style object matching the current theme at import
+# time. Prefer pt_style() for live-theme correctness.
+PT_STYLE = pt_style()
 
-
-def prompt_label(text: str) -> FormattedText:
-    """Build a green, class-styled prompt label for prompt_toolkit."""
-    return FormattedText([("class:prompt", text)])
+__all__ = ["PT_STYLE", "prompt_label", "read_line", "read_text", "pt_style"]

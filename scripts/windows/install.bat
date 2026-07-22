@@ -58,7 +58,11 @@ echo.
 echo [STEP] Upgrading pip...
 %PY_CMD% -m pip install --upgrade pip >> "%LOG_FILE%" 2>&1
 if errorlevel 1 (
-    echo [ERROR] pip upgrade failed. See "%LOG_FILE%".
+    echo [ERROR] pip upgrade failed. Common causes:
+    echo         - no internet connection ^(check and retry^)
+    echo         - permission denied ^(re-run from an Administrator prompt, or
+    echo           use:  %PY_CMD% -m pip install --user --upgrade pip^)
+    echo         Details: "%LOG_FILE%"
     exit /b 1
 )
 
@@ -83,10 +87,25 @@ if errorlevel 1 (
 )
 
 REM --- 5. Verify ---------------------------------------------------------------
+REM Primary check: the console script. Fallback: python -m seedcode. One of
+REM the two MUST answer with the version, or the install is reported failed.
 echo [STEP] Verifying installation...
-%PY_CMD% -c "import seedcode; print('[OK] Seed Code', seedcode.__version__, 'imports cleanly')"
-if errorlevel 1 (
-    echo [ERROR] Verification failed: the seedcode package does not import.
+set "VERIFIED="
+seedcode --version >nul 2>&1
+if not errorlevel 1 (
+    for /f "delims=" %%V in ('seedcode --version') do echo [OK] %%V ^(seedcode command works^)
+    set "VERIFIED=1"
+) else (
+    %PY_CMD% -m seedcode --version >nul 2>&1
+    if not errorlevel 1 (
+        for /f "delims=" %%V in ('%PY_CMD% -m seedcode --version') do echo [OK] %%V ^(via python -m seedcode^)
+        set "VERIFIED=1"
+    )
+)
+if not defined VERIFIED (
+    echo [ERROR] Verification failed: neither 'seedcode --version' nor
+    echo         '%PY_CMD% -m seedcode --version' answered.
+    echo         The install did not complete - see "%LOG_FILE%".
     echo [FAILED] verification >> "%LOG_FILE%"
     exit /b 1
 )

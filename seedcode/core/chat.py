@@ -8,10 +8,13 @@ switching providers or models mid-session takes effect on the next turn.
 from __future__ import annotations
 
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
+from typing import Any
 
+from .identity import build_system_prompt
 from .models import AppConfig, Message
-from .providers import ProviderError, get_provider
+from .providers import ProviderError, get_provider, provider_label
+from .providers.base import StreamEvent, ToolSpec
 from ..utils.logger import get_logger
 
 _log = get_logger("chat")
@@ -19,12 +22,6 @@ _log = get_logger("chat")
 # Transparent retry for transient failures before any output has streamed.
 _MAX_RETRIES = 2
 _RETRY_BACKOFF_S = 1.5
-
-SYSTEM_PROMPT = (
-    "You are Seed Code, a fast, minimal, developer-focused AI coding assistant. "
-    "Be concise and professional. Prefer clear, correct code with short "
-    "explanations. Use markdown fenced code blocks with language hints."
-)
 
 
 class ChatError(Exception):
@@ -36,7 +33,11 @@ class ChatEngine:
 
     def __init__(self, config: AppConfig) -> None:
         self.config = config
-        self.messages: list[Message] = [Message(role="system", content=SYSTEM_PROMPT)]
+        # Build identity-aware system prompt with current provider + model
+        system_content = build_system_prompt(
+            provider_label(config.provider), config.model or "unspecified"
+        )
+        self.messages: list[Message] = [Message(role="system", content=system_content)]
 
     # --- history management ------------------------------------------------
     def add_user(self, content: str) -> None:
@@ -70,14 +71,32 @@ class ChatEngine:
         never once output has started, since a retry would replay the reply.
         All failures surface as :class:`ChatError` with friendly text.
         """
+        provider = self._resolve_provider()
+        yield from self._stream_with_retry(
+            lambda: provider.stream_chat(self.config, self.messages)
+        )
+
+    def stream_reply_events(self, tools: list[ToolSpec]) -> Iterator[StreamEvent]:
+        """Stream a reply as events (text deltas + native tool calls).
+
+        Same retry policy as :meth:`stream_reply` — one shared helper owns
+        it, so the two paths can never drift.
+        """
+        provider = self._resolve_provider()
+        yield from self._stream_with_retry(
+            lambda: provider.stream_chat_with_tools(self.config, self.messages, tools)
+        )
+
+    def _resolve_provider(self) -> Any:
         if not self.config.model:
             raise ChatError("No model selected. Pick one with /model first.")
-
         try:
-            provider = get_provider(self.config.provider)
+            return get_provider(self.config.provider)
         except ProviderError as exc:
             raise ChatError(str(exc)) from exc
 
+    def _stream_with_retry(self, request: Callable[[], Iterator[Any]]) -> Iterator[Any]:
+        """Run a provider stream with transient retry before first output."""
         attempt = 0
         while True:
             yielded = False
@@ -89,7 +108,7 @@ class ChatEngine:
                 attempt,
             )
             try:
-                for piece in provider.stream_chat(self.config, self.messages):
+                for piece in request():
                     yielded = True
                     yield piece
                 _log.info("request complete: provider=%s", self.config.provider)
@@ -102,6 +121,8 @@ class ChatEngine:
                     continue
                 _log.error("request failed: %s", exc)
                 raise ChatError(str(exc)) from exc
+            except ChatError:
+                raise
             except Exception as exc:  # last-resort guard: never crash the REPL
                 _log.exception("unexpected error during request")
                 raise ChatError(f"Unexpected error: {exc}") from exc

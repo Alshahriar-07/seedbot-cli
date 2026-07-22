@@ -18,13 +18,30 @@ def test_is_command() -> None:
 
 
 def test_all_documented_commands_registered() -> None:
-    for name in ("help", "model", "provider", "apikey", "clear", "reset", "history",
-                 "config", "about", "version", "exit"):
+    for name in ("help", "model", "provider", "apikey", "settings", "doctor",
+                 "clear", "reset", "history", "config", "about", "version",
+                 "exit"):
         assert name in _REGISTRY, f"missing command: {name}"
 
 
 def test_list_sessions_returns_list() -> None:
     assert isinstance(list_sessions(), list)
+
+
+def test_history_is_per_provider(tmp_path, monkeypatch) -> None:
+    from seedcode.memory import HistoryStore
+    from seedcode.utils import helpers
+
+    monkeypatch.setattr(helpers, "app_dir", lambda: tmp_path)
+
+    store_a = HistoryStore(sid="20260716-000001", provider_id="openrouter")
+    store_b = HistoryStore(sid="20260716-000001", provider_id="ollama")
+    assert store_a.path != store_b.path
+    assert "openrouter" in str(store_a.path)
+
+    store_a.save([Message(role="user", content="hi")])
+    assert ("20260716-000001", 1) in list_sessions("openrouter")
+    assert list_sessions("ollama") == []  # other providers see nothing
 
 
 def test_drop_last_user_keeps_transcript_alternating() -> None:

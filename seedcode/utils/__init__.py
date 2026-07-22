@@ -6,7 +6,6 @@ from .helpers import (
     app_dir,
     config_path,
     history_dir,
-    human_timestamp,
     restrict_permissions,
     session_id,
 )
@@ -17,7 +16,6 @@ __all__ = [
     "config_path",
     "get_logger",
     "history_dir",
-    "human_timestamp",
     "restrict_permissions",
     "session_id",
     "setup_logging",

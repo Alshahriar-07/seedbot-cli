@@ -1,17 +1,9 @@
-"""Deprecated module kept for import compatibility.
+"""REMOVED. The deprecated OpenRouter client shim is gone.
 
-The OpenRouter client moved into the provider layer
-(:mod:`seedcode.core.providers.openrouter`). Import from there instead.
+This file is scheduled for deletion; nothing in Seed Code imports it.
+Providers live in :mod:`seedcode.core.providers`.
 """
 
-from __future__ import annotations
-
-from .providers import ValidationResult
-from .providers.openrouter import OpenRouterProvider
-
-__all__ = ["ValidationResult", "validate_key"]
-
-
-def validate_key(api_key: str) -> ValidationResult:
-    """Validate an OpenRouter key (delegates to the provider)."""
-    return OpenRouterProvider().validate_key(api_key)
+raise ImportError(
+    "seedcode.core.client was removed. Use seedcode.core.providers instead."
+)

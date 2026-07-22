@@ -50,7 +50,9 @@ if not exist "%USERPROFILE%\.seedcode" (
     echo [INFO] No user data directory to remove.
     goto :done
 )
-set /p CONFIRM="Delete Seed Code user data (config + history) at %USERPROFILE%\.seedcode? [y/N] "
+echo The folder "%USERPROFILE%\.seedcode" holds your settings, API keys,
+echo chat history, and logs.
+set /p CONFIRM="Delete it too? [y/N] "
 if /I "!CONFIRM!"=="y" (
     rmdir /s /q "%USERPROFILE%\.seedcode"
     echo [OK] User data deleted.

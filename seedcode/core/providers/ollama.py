@@ -14,7 +14,16 @@ from typing import TYPE_CHECKING
 
 import httpx
 
-from .base import ModelInfo, Provider, ProviderError, ValidationResult
+from .base import (
+    ModelInfo,
+    Provider,
+    ProviderError,
+    StreamEvent,
+    TextDelta,
+    ToolCallEvent,
+    ToolSpec,
+    ValidationResult,
+)
 
 if TYPE_CHECKING:
     from ..models import AppConfig, Message
@@ -31,17 +40,61 @@ def _not_running(host: str) -> ProviderError:
     )
 
 
+def _to_api_ollama(message: "Message") -> dict:
+    """Ollama message shape; attaches base64 images when present."""
+    api = message.to_api()
+    if message.images:
+        api["images"] = list(message.images)  # type: ignore[assignment]
+    return api
+
+
+def _to_api_ollama_tools(message: "Message") -> dict:
+    """Ollama message shape for tool-calling conversations.
+
+    Assistant tool calls use the OpenAI-style ``tool_calls`` field; result
+    messages are role=="tool" with plain content (Ollama pairs them by
+    order, it has no call ids).
+    """
+    if message.role == "tool":
+        return {"role": "tool", "content": message.content}
+    if message.role == "assistant" and message.tool_calls:
+        return {
+            "role": "assistant",
+            "content": message.content,
+            "tool_calls": [
+                {"function": {"name": call.name, "arguments": call.arguments}}
+                for call in message.tool_calls
+            ],
+        }
+    return _to_api_ollama(message)
+
+
 @dataclass
 class OllamaProvider(Provider):
     def __post_init__(self) -> None:
         self.id = "ollama"
         self.label = "Ollama (local)"
+        self.base_url = ""  # per-user host lives in config.ollama_host
         self.requires_key = False
         self.key_hint = ""
 
     def validate_key(self, api_key: str) -> ValidationResult:
         """No key needed; 'validation' means the local server responds."""
         return ValidationResult(True, "Ollama needs no API key.")
+
+    def extra_settings(self, config: "AppConfig") -> dict[str, str]:
+        return {"host": config.ollama_host}
+
+    def set_extra_setting(
+        self, config: "AppConfig", name: str, value: str
+    ) -> tuple[bool, str]:
+        if name != "host":
+            return False, f"{self.label} has no setting '{name}'."
+        host = value.strip().rstrip("/")
+        if not host.startswith(("http://", "https://")):
+            return False, "host expects a URL like http://localhost:11434."
+        config.ollama_host = host
+        return True, f"Ollama host set to {host}."
 
     def detect(self, config: "AppConfig") -> bool:
         """True when the Ollama server answers on the configured host."""
@@ -76,10 +129,14 @@ class OllamaProvider(Provider):
             )
         return models
 
+    def supports_images(self, config: "AppConfig") -> bool:
+        """Ollama's chat API accepts images natively (vision models use them)."""
+        return True
+
     def stream_chat(self, config: "AppConfig", messages: list["Message"]) -> Iterator[str]:
         payload = {
             "model": config.model,
-            "messages": [m.to_api() for m in messages],
+            "messages": [_to_api_ollama(m) for m in messages],
             "stream": True,
         }
         try:
@@ -90,6 +147,12 @@ class OllamaProvider(Provider):
                     raise ProviderError(
                         f"Model '{config.model}' is not installed in Ollama. "
                         f"Run: ollama pull {config.model}  (or pick another via /model)"
+                    )
+                if response.status_code >= 500:
+                    raise ProviderError(
+                        f"Ollama had a server error (HTTP {response.status_code}). "
+                        "Please try again.",
+                        transient=True,
                     )
                 if response.status_code >= 400:
                     detail = response.read().decode("utf-8", "replace")[:300]
@@ -107,6 +170,87 @@ class OllamaProvider(Provider):
                     piece = (event.get("message") or {}).get("content")
                     if piece:
                         yield piece
+                    if event.get("done"):
+                        return
+        except httpx.TimeoutException as exc:
+            raise ProviderError(
+                "Timed out waiting for Ollama. The model may still be loading — try again.",
+                transient=True,
+            ) from exc
+        except httpx.HTTPError as exc:
+            raise _not_running(config.ollama_host) from exc
+
+    # --- native tool calling -------------------------------------------------
+    def supports_tools(self, config: "AppConfig") -> bool:
+        """Attempt native tools; models without support fail at runtime and
+        the agent layer falls back to the text protocol."""
+        return True
+
+    def stream_chat_with_tools(
+        self, config: "AppConfig", messages: list["Message"], tools: list[ToolSpec]
+    ) -> Iterator[StreamEvent]:
+        payload = {
+            "model": config.model,
+            "messages": [_to_api_ollama_tools(m) for m in messages],
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": t.name,
+                        "description": t.description,
+                        "parameters": t.parameters,
+                    },
+                }
+                for t in tools
+            ],
+            "stream": True,
+        }
+        call_counter = 0
+        try:
+            with httpx.stream(
+                "POST", f"{config.ollama_host}/api/chat", json=payload, timeout=_CHAT_TIMEOUT
+            ) as response:
+                if response.status_code == 404:
+                    raise ProviderError(
+                        f"Model '{config.model}' is not installed in Ollama. "
+                        f"Run: ollama pull {config.model}  (or pick another via /model)"
+                    )
+                if response.status_code >= 500:
+                    raise ProviderError(
+                        f"Ollama had a server error (HTTP {response.status_code}). "
+                        "Please try again.",
+                        transient=True,
+                    )
+                if response.status_code >= 400:
+                    detail = response.read().decode("utf-8", "replace")[:300]
+                    raise ProviderError(f"Ollama error (HTTP {response.status_code}): {detail}")
+                # NDJSON stream; tool calls arrive with arguments already
+                # parsed as objects (no fragment assembly needed). Ollama has
+                # no call ids, so synthesize stable ones.
+                for line in response.iter_lines():
+                    if not line.strip():
+                        continue
+                    try:
+                        event = json.loads(line)
+                    except ValueError:
+                        continue
+                    if event.get("error"):
+                        raise ProviderError(f"Ollama error: {event['error']}")
+                    message = event.get("message") or {}
+                    piece = message.get("content")
+                    if piece:
+                        yield TextDelta(piece)
+                    for call in message.get("tool_calls") or []:
+                        fn = call.get("function") or {}
+                        arguments = fn.get("arguments")
+                        if not isinstance(arguments, dict):
+                            arguments = {}
+                        call_counter += 1
+                        yield ToolCallEvent(
+                            id=f"call_{call_counter}",
+                            name=fn.get("name", ""),
+                            arguments=arguments,
+                        )
                     if event.get("done"):
                         return
         except httpx.TimeoutException as exc:
